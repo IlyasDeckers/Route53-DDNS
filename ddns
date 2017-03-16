@@ -30,7 +30,7 @@ function valid_ip()
     return $stat
 }
 
-update_route53() {
+function update_route53() {
     DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
     LOGFILE="$DIR/update-route53.log"
     IPFILE="$DIR/update-route53.ip"
