@@ -2,11 +2,10 @@
 
 #PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Hosted Zone ID e.g. BJBK35SKMM9OE
+# Hosted Zone ID
 ZONEID="Z1395DSCRDTCOQ"
-
-# The CNAME you want to update e.g. hello.example.com
 RECORDSET="betty.phasehosting.io"
+LOCKFILE=/tmp/ddns.lock
 
 TTL=10
 COMMENT="Auto updating @ `date`"
@@ -31,59 +30,73 @@ function valid_ip()
     return $stat
 }
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-LOGFILE="$DIR/update-route53.log"
-IPFILE="$DIR/update-route53.ip"
+update_route53() {
+    DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    LOGFILE="$DIR/update-route53.log"
+    IPFILE="$DIR/update-route53.ip"
 
-if ! valid_ip $IP; then
-    echo "Invalid IP address: $IP" >> "$LOGFILE"
+    if ! valid_ip $IP; then
+        echo "Invalid IP address: $IP" >> "$LOGFILE"
+        exit 1
+    fi
+
+    if [ ! -f "$IPFILE" ]
+        then
+        touch "$IPFILE"
+    fi
+
+    if grep -Fxq "$IP" "$IPFILE"; then
+        echo "IP is still $IP. Exiting" >> "$LOGFILE"
+        exit 0
+    else
+        echo "IP has changed to $IP" >> "$LOGFILE"
+        TMPFILE=$(mktemp /tmp/temporary-file.XXXXXXXX)
+        cat > ${TMPFILE} << EOF
+        {
+          "Comment":"$COMMENT",
+          "Changes":[
+            {
+              "Action":"UPSERT",
+              "ResourceRecordSet":{
+                "ResourceRecords":[
+                  {
+                    "Value":"$IP"
+                  }
+                ],
+                "Name":"$RECORDSET",
+                "Type":"$TYPE",
+                "TTL":$TTL
+              }
+            }
+          ]
+        }
+    EOF
+
+        # Update the Hosted Zone record
+        aws route53 change-resource-record-sets \
+            --hosted-zone-id $ZONEID \
+            --change-batch file://"$TMPFILE" >> "$LOGFILE"
+        echo "" >> "$LOGFILE"
+
+        # Clean up
+        rm $TMPFILE
+    fi
+
+    echo "$IP" > "$IPFILE"
+}
+
+if ( set -o noclobber; echo "$$" > "$LOCKFILE") 2> /dev/null;
+then
+    trap 'rm -f "$LOCKFILE"; exit $?' INT TERM EXIT
+
+    while true; do
+        update_route53;
+        sleep 10
+    done
+
+    rm -f "$LOCKFILE"
+    trap - INT TERM EXIT
+else
+    out "Already running"
     exit 1
 fi
-
-# Check if the IP has changed
-if [ ! -f "$IPFILE" ]
-    then
-    touch "$IPFILE"
-fi
-
-if grep -Fxq "$IP" "$IPFILE"; then
-    # code if found
-    echo "IP is still $IP. Exiting" >> "$LOGFILE"
-    exit 0
-else
-    echo "IP has changed to $IP" >> "$LOGFILE"
-    # Fill a temp file with valid JSON
-    TMPFILE=$(mktemp /tmp/temporary-file.XXXXXXXX)
-    cat > ${TMPFILE} << EOF
-    {
-      "Comment":"$COMMENT",
-      "Changes":[
-        {
-          "Action":"UPSERT",
-          "ResourceRecordSet":{
-            "ResourceRecords":[
-              {
-                "Value":"$IP"
-              }
-            ],
-            "Name":"$RECORDSET",
-            "Type":"$TYPE",
-            "TTL":$TTL
-          }
-        }
-      ]
-    }
-EOF
-
-    # Update the Hosted Zone record
-    aws route53 change-resource-record-sets \
-        --hosted-zone-id $ZONEID \
-        --change-batch file://"$TMPFILE" >> "$LOGFILE"
-    echo "" >> "$LOGFILE"
-
-    # Clean up
-    rm $TMPFILE
-fi
-
-# All Done - cache the IP address for next time
-echo "$IP" > "$IPFILE"
